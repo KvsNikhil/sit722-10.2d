@@ -9,13 +9,13 @@ permissions:
   id-token: write
 
 env:
-  REGISTRY: ${{ secrets.ACR_LOGIN_SERVER }}
+  REGISTRY: ${{ secrets.ACR_LOGIN_SERVER }}   # e.g. myacr.azurecr.io
   ACR_NAME: ${{ secrets.ACR_NAME }}
   LOCATION: ${{ secrets.LOCATION }}
 
   # Staging infra (temporary)
-  STAGING_RG: ${{ secrets.STAGING_RG }}            # e.g., rg-sit722-staging
-  STAGING_PLAN: ${{ secrets.STAGING_PLAN }}        # e.g., plan-sit722-staging
+  STAGING_RG: ${{ secrets.STAGING_RG }}
+  STAGING_PLAN: ${{ secrets.STAGING_PLAN }}
 
   # Staging app names
   STAGING_APP_FRONTEND: ${{ secrets.STAGING_APP_FRONTEND }}
@@ -74,7 +74,6 @@ jobs:
           POSTGRES_PORT: "5432"
           POSTGRES_DB: ${{ matrix.service == 'backend/customer_service' && 'customers' || (matrix.service == 'backend/product_service' && 'products' || 'orders') }}
         run: |
-          # quick wait for service health
           for i in {1..30}; do
             nc -z 127.0.0.1 5432 && break
             sleep 2
@@ -94,11 +93,13 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: ACR login
-        uses: azure/CLI@v2
+      # 👇 FIX: login to ACR with docker-login (not azure/CLI)
+      - name: Login to ACR (Docker)
+        uses: azure/docker-login@v2
         with:
-          inlineScript: |
-            az acr login --name "${{ env.ACR_NAME }}"
+          login-server: ${{ env.REGISTRY }}
+          username: ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientId }}
+          password: ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientSecret }}
 
       - name: Build & push FRONTEND image
         working-directory: frontend
@@ -162,7 +163,6 @@ jobs:
             az webapp config container set -g "${{ env.STAGING_RG }}" -n "$APP" \
               --docker-custom-image-name "$IMG" \
               --docker-registry-server-url "https://${{ env.REGISTRY }}"
-            # Nginx uses 80 (no WEBSITES_PORT needed)
 
       - name: Create/Update staging apps (customer)
         uses: azure/CLI@v2
@@ -228,5 +228,3 @@ jobs:
               sleep 5
             done
           done
-
-  # 4) Manual: destroy staging RG when done (separate workflow below)

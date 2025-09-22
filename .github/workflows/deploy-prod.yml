@@ -9,11 +9,11 @@ permissions:
   id-token: write
 
 env:
-  REGISTRY: ${{ secrets.ACR_LOGIN_SERVER }}
+  REGISTRY: ${{ secrets.ACR_LOGIN_SERVER }}  # e.g. myacr.azurecr.io
   ACR_NAME: ${{ secrets.ACR_NAME }}
 
-  PROD_RG:   ${{ secrets.PROD_RG }}     # rg-prod
-  PROD_PLAN: ${{ secrets.PROD_PLAN }}   # plan-prod
+  PROD_RG:   ${{ secrets.PROD_RG }}
+  PROD_PLAN: ${{ secrets.PROD_PLAN }}
 
   PROD_APP_FRONTEND: ${{ secrets.PROD_APP_FRONTEND }}
   PROD_APP_CUSTOMER: ${{ secrets.PROD_APP_CUSTOMER }}
@@ -36,7 +36,7 @@ jobs:
         working-directory: backend/customer_service
         run: |
           pip install -r requirements-dev.txt
-          pytest -q || true  # allow non-db envs; full tests ran on 'testing' already
+          pytest -q || true
       - name: Install and test (product)
         working-directory: backend/product_service
         run: |
@@ -53,10 +53,13 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: ACR login
-        uses: azure/CLI@v2
+      # 👇 FIX: login to ACR with docker-login
+      - name: Login to ACR (Docker)
+        uses: azure/docker-login@v2
         with:
-          inlineScript: az acr login --name "${{ env.ACR_NAME }}"
+          login-server: ${{ env.REGISTRY }}
+          username: ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientId }}
+          password: ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientSecret }}
 
       - name: Build & push FRONTEND
         working-directory: frontend

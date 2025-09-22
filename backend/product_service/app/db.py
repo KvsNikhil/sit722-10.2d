@@ -22,17 +22,14 @@ else:
             f"{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
         )
 
+# Add sslmode=require automatically for Azure Flexible Server, if not present
 if (
     DATABASE_URL.startswith("postgresql://")
     and "postgres.database.azure.com" in DATABASE_URL
     and "sslmode=" not in DATABASE_URL
 ):
     sep = "&" if "?" in DATABASE_URL else "?"
-    DATABASE_URL = f"{DATABASE_URL}{sep}sslmode=require}"
-
-# (typo-safety) remove stray brace if any
-if DATABASE_URL.endswith("require}"):
-    DATABASE_URL = DATABASE_URL[:-1]
+    DATABASE_URL = f"{DATABASE_URL}{sep}sslmode=require"
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, future=True)

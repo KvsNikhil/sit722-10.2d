@@ -3,8 +3,6 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 USE_SQLITE = os.getenv("USE_SQLITE", "false").lower() == "true"
-
-# Optional single-shot override (useful for debugging):
 OVERRIDE_URL = os.getenv("DATABASE_URL")
 
 if USE_SQLITE and not OVERRIDE_URL:
@@ -24,14 +22,12 @@ else:
             f"{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
         )
 
-# --- Ensure SSL for Azure Postgres Flexible Server ---
-# Appends '?sslmode=require' if we detect Azure host and no explicit sslmode is present.
+# Add sslmode=require automatically for Azure Flexible Server, if not present
 if (
     DATABASE_URL.startswith("postgresql://")
     and "postgres.database.azure.com" in DATABASE_URL
     and "sslmode=" not in DATABASE_URL
-)
-:
+):
     sep = "&" if "?" in DATABASE_URL else "?"
     DATABASE_URL = f"{DATABASE_URL}{sep}sslmode=require"
 

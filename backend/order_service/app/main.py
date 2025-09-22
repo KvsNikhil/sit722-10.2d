@@ -42,6 +42,11 @@ logger.info(
     f"Order Service: Configured to communicate with Customer Service at: {CUSTOMER_SERVICE_URL}"
 )
 
+#Adding
+PRODUCT_SERVICE_URL = os.getenv("PRODUCT_SERVICE_URL", "http://localhost:8003")
+logger.info(
+    f"Order Service: Configured to communicate with Product Service at: {PRODUCT_SERVICE_URL}"
+)
 
 # --- RabbitMQ Configuration ---
 RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
@@ -545,7 +550,7 @@ async def update_order_status(
             status_code=status.HTTP_404_NOT_FOUND, detail="Order not found"
         )
 
-    db_order.status = new_status
+    db_order.status = new_status.status
 
     try:
         db.add(db_order)

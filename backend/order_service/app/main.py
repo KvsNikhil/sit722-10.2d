@@ -38,15 +38,10 @@ logging.getLogger("uvicorn.error").setLevel(logging.INFO)
 
 # --- Service URLs Configuration ---
 CUSTOMER_SERVICE_URL = os.getenv("CUSTOMER_SERVICE_URL", "http://localhost:8002")
-logger.info(
-    f"Order Service: Configured to communicate with Customer Service at: {CUSTOMER_SERVICE_URL}"
-)
+PRODUCT_SERVICE_URL  = os.getenv("PRODUCT_SERVICE_URL",  "http://localhost:8003")
 
-#Adding
-PRODUCT_SERVICE_URL = os.getenv("PRODUCT_SERVICE_URL", "http://localhost:8003")
-logger.info(
-    f"Order Service: Configured to communicate with Product Service at: {PRODUCT_SERVICE_URL}"
-)
+logger.info(f"Order Service: Customer URL = {CUSTOMER_SERVICE_URL}")
+logger.info(f"Order Service: Product  URL = {PRODUCT_SERVICE_URL}")
 
 # --- RabbitMQ Configuration ---
 RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
@@ -69,7 +64,7 @@ app = FastAPI(
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict for production
+    allow_origins=["*"],  # tighten in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

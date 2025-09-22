@@ -24,7 +24,6 @@ env:
   STAGING_APP_ORDER:    ${{ secrets.STAGING_APP_ORDER }}
 
 jobs:
-  # 1) TEST each backend service against a PostgreSQL service container
   test:
     name: Run pytest (${{ matrix.service }})
     runs-on: ubuntu-latest
@@ -80,7 +79,6 @@ jobs:
           done
           pytest -q
 
-  # 2) BUILD+PUSH images (only if all tests passed)
   build_and_push:
     name: Build & Push images to ACR
     runs-on: ubuntu-latest
@@ -93,7 +91,6 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # Login to ACR with docker-login (host docker)
       - name: Login to ACR (Docker)
         uses: azure/docker-login@v2
         with:
@@ -129,7 +126,6 @@ jobs:
           docker build -t "$IMAGE" .
           docker push "$IMAGE"
 
-  # 3) STAGING DEPLOY (ephemeral: create/update apps, point to :testing tags)
   deploy_staging:
     name: Deploy to staging (temporary)
     runs-on: ubuntu-latest
@@ -153,15 +149,14 @@ jobs:
             az group create -n "${{ env.STAGING_RG }}" -l "${{ env.LOCATION }}"
             az appservice plan create -g "${{ env.STAGING_RG }}" -n "${{ env.STAGING_PLAN }}" --sku B1 --is-linux || true
 
-      - name: Create/Update staging apps (frontend)
+      - name: Create/Update staging app (frontend)
         uses: azure/CLI@v2
         with:
           inlineScript: |
             APP="${{ env.STAGING_APP_FRONTEND }}"
             IMG="${{ env.REGISTRY }}/frontend:testing"
             if ! az webapp show -g "${{ env.STAGING_RG }}" -n "$APP" >/dev/null 2>&1; then
-              az webapp create -g "${{ env.STAGING_RG }}" -p "${{ env.STAGING_PLAN }}" -n "$APP" \
-                --deployment-container-image-name "$IMG"
+              az webapp create -g "${{ env.STAGING_RG }}" -p "${{ env.STAGING_PLAN }}" -n "$APP" --deployment-container-image-name "$IMG"
             fi
             az webapp config container set -g "${{ env.STAGING_RG }}" -n "$APP" \
               --docker-custom-image-name "$IMG" \
@@ -170,15 +165,14 @@ jobs:
               --docker-registry-server-password "${{ env.ACR_PASS }}"
             az webapp restart -g "${{ env.STAGING_RG }}" -n "$APP"
 
-      - name: Create/Update staging apps (customer)
+      - name: Create/Update staging app (customer)
         uses: azure/CLI@v2
         with:
           inlineScript: |
             APP="${{ env.STAGING_APP_CUSTOMER }}"
             IMG="${{ env.REGISTRY }}/customer_service:testing"
             if ! az webapp show -g "${{ env.STAGING_RG }}" -n "$APP" >/dev/null 2>&1; then
-              az webapp create -g "${{ env.STAGING_RG }}" -p "${{ env.STAGING_PLAN }}" -n "$APP" \
-                --deployment-container-image-name "$IMG"
+              az webapp create -g "${{ env.STAGING_RG }}" -p "${{ env.STAGING_PLAN }}" -n "$APP" --deployment-container-image-name "$IMG"
             fi
             az webapp config container set -g "${{ env.STAGING_RG }}" -n "$APP" \
               --docker-custom-image-name "$IMG" \
@@ -186,18 +180,17 @@ jobs:
               --docker-registry-server-user "${{ env.ACR_USER }}" \
               --docker-registry-server-password "${{ env.ACR_PASS }}"
             az webapp config appsettings set -g "${{ env.STAGING_RG }}" -n "$APP" \
-              --settings WEBSITES_PORT=8000
+              --settings WEBSITES_PORT=8000 USE_SQLITE=true
             az webapp restart -g "${{ env.STAGING_RG }}" -n "$APP"
 
-      - name: Create/Update staging apps (product)
+      - name: Create/Update staging app (product)
         uses: azure/CLI@v2
         with:
           inlineScript: |
             APP="${{ env.STAGING_APP_PRODUCT }}"
             IMG="${{ env.REGISTRY }}/product_service:testing"
             if ! az webapp show -g "${{ env.STAGING_RG }}" -n "$APP" >/dev/null 2>&1; then
-              az webapp create -g "${{ env.STAGING_RG }}" -p "${{ env.STAGING_PLAN }}" -n "$APP" \
-                --deployment-container-image-name "$IMG"
+              az webapp create -g "${{ env.STAGING_RG }}" -p "${{ env.STAGING_PLAN }}" -n "$APP" --deployment-container-image-name "$IMG"
             fi
             az webapp config container set -g "${{ env.STAGING_RG }}" -n "$APP" \
               --docker-custom-image-name "$IMG" \
@@ -205,18 +198,19 @@ jobs:
               --docker-registry-server-user "${{ env.ACR_USER }}" \
               --docker-registry-server-password "${{ env.ACR_PASS }}"
             az webapp config appsettings set -g "${{ env.STAGING_RG }}" -n "$APP" \
-              --settings WEBSITES_PORT=8000
+              --settings WEBSITES_PORT=8000 USE_SQLITE=true
             az webapp restart -g "${{ env.STAGING_RG }}" -n "$APP"
 
-      - name: Create/Update staging apps (order)
+      - name: Create/Update staging app (order)
         uses: azure/CLI@v2
         with:
           inlineScript: |
             APP="${{ env.STAGING_APP_ORDER }}"
             IMG="${{ env.REGISTRY }}/order_service:testing"
+            CUST_URL="https://${{ env.STAGING_APP_CUSTOMER }}.azurewebsites.net"
+            PROD_URL="https://${{ env.STAGING_APP_PRODUCT }}.azurewebsites.net"
             if ! az webapp show -g "${{ env.STAGING_RG }}" -n "$APP" >/dev/null 2>&1; then
-              az webapp create -g "${{ env.STAGING_RG }}" -p "${{ env.STAGING_PLAN }}" -n "$APP" \
-                --deployment-container-image-name "$IMG"
+              az webapp create -g "${{ env.STAGING_RG }}" -p "${{ env.STAGING_PLAN }}" -n "$APP" --deployment-container-image-name "$IMG"
             fi
             az webapp config container set -g "${{ env.STAGING_RG }}" -n "$APP" \
               --docker-custom-image-name "$IMG" \
@@ -224,13 +218,16 @@ jobs:
               --docker-registry-server-user "${{ env.ACR_USER }}" \
               --docker-registry-server-password "${{ env.ACR_PASS }}"
             az webapp config appsettings set -g "${{ env.STAGING_RG }}" -n "$APP" \
-              --settings WEBSITES_PORT=8000
+              --settings WEBSITES_PORT=8000 USE_SQLITE=true CUSTOMER_SERVICE_URL=$CUST_URL PRODUCT_SERVICE_URL=$PROD_URL
             az webapp restart -g "${{ env.STAGING_RG }}" -n "$APP"
 
       - name: Smoke checks
         run: |
           urls=(
             "https://${{ env.STAGING_APP_FRONTEND }}.azurewebsites.net"
+            "https://${{ env.STAGING_APP_CUSTOMER }}.azurewebsites.net/health"
+            "https://${{ env.STAGING_APP_PRODUCT }}.azurewebsites.net/health"
+            "https://${{ env.STAGING_APP_ORDER }}.azurewebsites.net/health"
             "https://${{ env.STAGING_APP_CUSTOMER }}.azurewebsites.net/docs"
             "https://${{ env.STAGING_APP_PRODUCT }}.azurewebsites.net/docs"
             "https://${{ env.STAGING_APP_ORDER }}.azurewebsites.net/docs"

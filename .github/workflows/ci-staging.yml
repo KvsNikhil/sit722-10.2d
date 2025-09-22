@@ -93,7 +93,7 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # 👇 FIX: login to ACR with docker-login (not azure/CLI)
+      # Login to ACR with docker-login (host docker)
       - name: Login to ACR (Docker)
         uses: azure/docker-login@v2
         with:
@@ -136,6 +136,9 @@ jobs:
     needs: [build_and_push]
     environment:
       name: staging
+    env:
+      ACR_USER: ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientId }}
+      ACR_PASS: ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientSecret }}
     steps:
       - name: Azure login
         uses: azure/login@v2
@@ -162,7 +165,10 @@ jobs:
             fi
             az webapp config container set -g "${{ env.STAGING_RG }}" -n "$APP" \
               --docker-custom-image-name "$IMG" \
-              --docker-registry-server-url "https://${{ env.REGISTRY }}"
+              --docker-registry-server-url "https://${{ env.REGISTRY }}" \
+              --docker-registry-server-user "${{ env.ACR_USER }}" \
+              --docker-registry-server-password "${{ env.ACR_PASS }}"
+            az webapp restart -g "${{ env.STAGING_RG }}" -n "$APP"
 
       - name: Create/Update staging apps (customer)
         uses: azure/CLI@v2
@@ -176,9 +182,12 @@ jobs:
             fi
             az webapp config container set -g "${{ env.STAGING_RG }}" -n "$APP" \
               --docker-custom-image-name "$IMG" \
-              --docker-registry-server-url "https://${{ env.REGISTRY }}"
+              --docker-registry-server-url "https://${{ env.REGISTRY }}" \
+              --docker-registry-server-user "${{ env.ACR_USER }}" \
+              --docker-registry-server-password "${{ env.ACR_PASS }}"
             az webapp config appsettings set -g "${{ env.STAGING_RG }}" -n "$APP" \
               --settings WEBSITES_PORT=8000
+            az webapp restart -g "${{ env.STAGING_RG }}" -n "$APP"
 
       - name: Create/Update staging apps (product)
         uses: azure/CLI@v2
@@ -192,9 +201,12 @@ jobs:
             fi
             az webapp config container set -g "${{ env.STAGING_RG }}" -n "$APP" \
               --docker-custom-image-name "$IMG" \
-              --docker-registry-server-url "https://${{ env.REGISTRY }}"
+              --docker-registry-server-url "https://${{ env.REGISTRY }}" \
+              --docker-registry-server-user "${{ env.ACR_USER }}" \
+              --docker-registry-server-password "${{ env.ACR_PASS }}"
             az webapp config appsettings set -g "${{ env.STAGING_RG }}" -n "$APP" \
               --settings WEBSITES_PORT=8000
+            az webapp restart -g "${{ env.STAGING_RG }}" -n "$APP"
 
       - name: Create/Update staging apps (order)
         uses: azure/CLI@v2
@@ -208,9 +220,12 @@ jobs:
             fi
             az webapp config container set -g "${{ env.STAGING_RG }}" -n "$APP" \
               --docker-custom-image-name "$IMG" \
-              --docker-registry-server-url "https://${{ env.REGISTRY }}"
+              --docker-registry-server-url "https://${{ env.REGISTRY }}" \
+              --docker-registry-server-user "${{ env.ACR_USER }}" \
+              --docker-registry-server-password "${{ env.ACR_PASS }}"
             az webapp config appsettings set -g "${{ env.STAGING_RG }}" -n "$APP" \
               --settings WEBSITES_PORT=8000
+            az webapp restart -g "${{ env.STAGING_RG }}" -n "$APP"
 
       - name: Smoke checks
         run: |

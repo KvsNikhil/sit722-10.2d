@@ -53,7 +53,6 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # 👇 FIX: login to ACR with docker-login
       - name: Login to ACR (Docker)
         uses: azure/docker-login@v2
         with:
@@ -91,6 +90,9 @@ jobs:
     needs: [build_and_push_prod]
     environment:
       name: production
+    env:
+      ACR_USER: ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientId }}
+      ACR_PASS: ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientSecret }}
     steps:
       - uses: azure/login@v2
         with:
@@ -102,7 +104,10 @@ jobs:
           inlineScript: |
             az webapp config container set -g "${{ env.PROD_RG }}" -n "${{ env.PROD_APP_FRONTEND }}" \
               --docker-custom-image-name "${{ env.REGISTRY }}/frontend:prod" \
-              --docker-registry-server-url "https://${{ env.REGISTRY }}"
+              --docker-registry-server-url "https://${{ env.REGISTRY }}" \
+              --docker-registry-server-user "${{ env.ACR_USER }}" \
+              --docker-registry-server-password "${{ env.ACR_PASS }}"
+            az webapp restart -g "${{ env.PROD_RG }}" -n "${{ env.PROD_APP_FRONTEND }}"
 
       - name: Point CUSTOMER at :prod
         uses: azure/CLI@v2
@@ -110,9 +115,12 @@ jobs:
           inlineScript: |
             az webapp config container set -g "${{ env.PROD_RG }}" -n "${{ env.PROD_APP_CUSTOMER }}" \
               --docker-custom-image-name "${{ env.REGISTRY }}/customer_service:prod" \
-              --docker-registry-server-url "https://${{ env.REGISTRY }}"
+              --docker-registry-server-url "https://${{ env.REGISTRY }}" \
+              --docker-registry-server-user "${{ env.ACR_USER }}" \
+              --docker-registry-server-password "${{ env.ACR_PASS }}"
             az webapp config appsettings set -g "${{ env.PROD_RG }}" -n "${{ env.PROD_APP_CUSTOMER }}" \
               --settings WEBSITES_PORT=8000
+            az webapp restart -g "${{ env.PROD_RG }}" -n "${{ env.PROD_APP_CUSTOMER }}"
 
       - name: Point PRODUCT at :prod
         uses: azure/CLI@v2
@@ -120,9 +128,12 @@ jobs:
           inlineScript: |
             az webapp config container set -g "${{ env.PROD_RG }}" -n "${{ env.PROD_APP_PRODUCT }}" \
               --docker-custom-image-name "${{ env.REGISTRY }}/product_service:prod" \
-              --docker-registry-server-url "https://${{ env.REGISTRY }}"
+              --docker-registry-server-url "https://${{ env.REGISTRY }}" \
+              --docker-registry-server-user "${{ env.ACR_USER }}" \
+              --docker-registry-server-password "${{ env.ACR_PASS }}"
             az webapp config appsettings set -g "${{ env.PROD_RG }}" -n "${{ env.PROD_APP_PRODUCT }}" \
               --settings WEBSITES_PORT=8000
+            az webapp restart -g "${{ env.PROD_RG }}" -n "${{ env.PROD_APP_PRODUCT }}"
 
       - name: Point ORDER at :prod
         uses: azure/CLI@v2
@@ -130,9 +141,12 @@ jobs:
           inlineScript: |
             az webapp config container set -g "${{ env.PROD_RG }}" -n "${{ env.PROD_APP_ORDER }}" \
               --docker-custom-image-name "${{ env.REGISTRY }}/order_service:prod" \
-              --docker-registry-server-url "https://${{ env.REGISTRY }}"
+              --docker-registry-server-url "https://${{ env.REGISTRY }}" \
+              --docker-registry-server-user "${{ env.ACR_USER }}" \
+              --docker-registry-server-password "${{ env.ACR_PASS }}"
             az webapp config appsettings set -g "${{ env.PROD_RG }}" -n "${{ env.PROD_APP_ORDER }}" \
               --settings WEBSITES_PORT=8000
+            az webapp restart -g "${{ env.PROD_RG }}" -n "${{ env.PROD_APP_ORDER }}"
 
       - name: Health checks
         run: |

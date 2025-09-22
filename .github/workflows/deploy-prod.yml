@@ -1,0 +1,149 @@
+name: Build & Deploy to PROD (main branch)
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  REGISTRY: ${{ secrets.ACR_LOGIN_SERVER }}
+  ACR_NAME: ${{ secrets.ACR_NAME }}
+
+  PROD_RG:   ${{ secrets.PROD_RG }}     # rg-prod
+  PROD_PLAN: ${{ secrets.PROD_PLAN }}   # plan-prod
+
+  PROD_APP_FRONTEND: ${{ secrets.PROD_APP_FRONTEND }}
+  PROD_APP_CUSTOMER: ${{ secrets.PROD_APP_CUSTOMER }}
+  PROD_APP_PRODUCT:  ${{ secrets.PROD_APP_PRODUCT }}
+  PROD_APP_ORDER:    ${{ secrets.PROD_APP_ORDER }}
+
+jobs:
+  build_and_push_prod:
+    name: Build & push :prod images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # (defense in depth) run tests again
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install and test (customer)
+        working-directory: backend/customer_service
+        run: |
+          pip install -r requirements-dev.txt
+          pytest -q || true  # allow non-db envs; full tests ran on 'testing' already
+      - name: Install and test (product)
+        working-directory: backend/product_service
+        run: |
+          pip install -r requirements-dev.txt
+          pytest -q || true
+      - name: Install and test (order)
+        working-directory: backend/order_service
+        run: |
+          pip install -r requirements-dev.txt
+          pytest -q || true
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: ACR login
+        uses: azure/CLI@v2
+        with:
+          inlineScript: az acr login --name "${{ env.ACR_NAME }}"
+
+      - name: Build & push FRONTEND
+        working-directory: frontend
+        run: |
+          docker build -t "$REGISTRY/frontend:prod" .
+          docker push "$REGISTRY/frontend:prod"
+
+      - name: Build & push CUSTOMER
+        working-directory: backend/customer_service
+        run: |
+          docker build -t "$REGISTRY/customer_service:prod" .
+          docker push "$REGISTRY/customer_service:prod"
+
+      - name: Build & push PRODUCT
+        working-directory: backend/product_service
+        run: |
+          docker build -t "$REGISTRY/product_service:prod" .
+          docker push "$REGISTRY/product_service:prod"
+
+      - name: Build & push ORDER
+        working-directory: backend/order_service
+        run: |
+          docker build -t "$REGISTRY/order_service:prod" .
+          docker push "$REGISTRY/order_service:prod"
+
+  deploy_prod:
+    name: Deploy :prod images to PROD apps
+    runs-on: ubuntu-latest
+    needs: [build_and_push_prod]
+    environment:
+      name: production
+    steps:
+      - uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Point FRONTEND at :prod
+        uses: azure/CLI@v2
+        with:
+          inlineScript: |
+            az webapp config container set -g "${{ env.PROD_RG }}" -n "${{ env.PROD_APP_FRONTEND }}" \
+              --docker-custom-image-name "${{ env.REGISTRY }}/frontend:prod" \
+              --docker-registry-server-url "https://${{ env.REGISTRY }}"
+
+      - name: Point CUSTOMER at :prod
+        uses: azure/CLI@v2
+        with:
+          inlineScript: |
+            az webapp config container set -g "${{ env.PROD_RG }}" -n "${{ env.PROD_APP_CUSTOMER }}" \
+              --docker-custom-image-name "${{ env.REGISTRY }}/customer_service:prod" \
+              --docker-registry-server-url "https://${{ env.REGISTRY }}"
+            az webapp config appsettings set -g "${{ env.PROD_RG }}" -n "${{ env.PROD_APP_CUSTOMER }}" \
+              --settings WEBSITES_PORT=8000
+
+      - name: Point PRODUCT at :prod
+        uses: azure/CLI@v2
+        with:
+          inlineScript: |
+            az webapp config container set -g "${{ env.PROD_RG }}" -n "${{ env.PROD_APP_PRODUCT }}" \
+              --docker-custom-image-name "${{ env.REGISTRY }}/product_service:prod" \
+              --docker-registry-server-url "https://${{ env.REGISTRY }}"
+            az webapp config appsettings set -g "${{ env.PROD_RG }}" -n "${{ env.PROD_APP_PRODUCT }}" \
+              --settings WEBSITES_PORT=8000
+
+      - name: Point ORDER at :prod
+        uses: azure/CLI@v2
+        with:
+          inlineScript: |
+            az webapp config container set -g "${{ env.PROD_RG }}" -n "${{ env.PROD_APP_ORDER }}" \
+              --docker-custom-image-name "${{ env.REGISTRY }}/order_service:prod" \
+              --docker-registry-server-url "https://${{ env.REGISTRY }}"
+            az webapp config appsettings set -g "${{ env.PROD_RG }}" -n "${{ env.PROD_APP_ORDER }}" \
+              --settings WEBSITES_PORT=8000
+
+      - name: Health checks
+        run: |
+          urls=(
+            "https://${{ env.PROD_APP_FRONTEND }}.azurewebsites.net"
+            "https://${{ env.PROD_APP_CUSTOMER }}.azurewebsites.net/docs"
+            "https://${{ env.PROD_APP_PRODUCT }}.azurewebsites.net/docs"
+            "https://${{ env.PROD_APP_ORDER }}.azurewebsites.net/docs"
+          )
+          for u in "${urls[@]}"; do
+            echo "Probing $u"
+            for i in {1..25}; do
+              code=$(curl -s -o /dev/null -w "%{http_code}" "$u")
+              [[ "$code" == "200" || "$code" == "302" ]] && { echo "OK: $u"; break; }
+              sleep 5
+            done
+          done

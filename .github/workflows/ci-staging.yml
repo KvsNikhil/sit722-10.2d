@@ -1,0 +1,242 @@
+name: CI → ACR → Staging (testing branch)
+
+on:
+  push:
+    branches: ["testing"]
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  REGISTRY: ${{ secrets.ACR_LOGIN_SERVER }}   # e.g. myacr.azurecr.io
+  ACR_NAME: ${{ secrets.ACR_NAME }}
+  LOCATION: ${{ secrets.LOCATION }}
+
+  # Staging infra (temporary)
+  STAGING_RG: ${{ secrets.STAGING_RG }}
+  STAGING_PLAN: ${{ secrets.STAGING_PLAN }}
+
+  # Staging app names
+  STAGING_APP_FRONTEND: ${{ secrets.STAGING_APP_FRONTEND }}
+  STAGING_APP_CUSTOMER: ${{ secrets.STAGING_APP_CUSTOMER }}
+  STAGING_APP_PRODUCT:  ${{ secrets.STAGING_APP_PRODUCT }}
+  STAGING_APP_ORDER:    ${{ secrets.STAGING_APP_ORDER }}
+
+jobs:
+  test:
+    name: Run pytest (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - backend/customer_service
+          - backend/product_service
+          - backend/order_service
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ${{ matrix.service == 'backend/customer_service' && 'customers' || (matrix.service == 'backend/product_service' && 'products' || 'orders') }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    defaults:
+      run:
+        working-directory: ${{ matrix.service }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dev deps
+        run: pip install -r requirements-dev.txt
+
+      - name: Wait for DB and run tests
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: "5432"
+          POSTGRES_DB: ${{ matrix.service == 'backend/customer_service' && 'customers' || (matrix.service == 'backend/product_service' && 'products' || 'orders') }}
+        run: |
+          for i in {1..30}; do
+            nc -z 127.0.0.1 5432 && break
+            sleep 2
+          done
+          pytest -q
+
+  build_and_push:
+    name: Build & Push images to ACR
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC or secret JSON)
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Login to ACR (Docker)
+        uses: azure/docker-login@v2
+        with:
+          login-server: ${{ env.REGISTRY }}
+          username: ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientId }}
+          password: ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientSecret }}
+
+      - name: Build & push FRONTEND image
+        working-directory: frontend
+        run: |
+          IMAGE="$REGISTRY/frontend:testing"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Build & push CUSTOMER image
+        working-directory: backend/customer_service
+        run: |
+          IMAGE="$REGISTRY/customer_service:testing"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Build & push PRODUCT image
+        working-directory: backend/product_service
+        run: |
+          IMAGE="$REGISTRY/product_service:testing"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Build & push ORDER image
+        working-directory: backend/order_service
+        run: |
+          IMAGE="$REGISTRY/order_service:testing"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+
+  deploy_staging:
+    name: Deploy to staging (temporary)
+    runs-on: ubuntu-latest
+    needs: [build_and_push]
+    environment:
+      name: staging
+    env:
+      ACR_USER: ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientId }}
+      ACR_PASS: ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientSecret }}
+    steps:
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Ensure staging RG/plan exist
+        uses: azure/CLI@v2
+        with:
+          inlineScript: |
+            az account set --subscription "${{ secrets.AZ_SUBSCRIPTION_ID }}"
+            az group create -n "${{ env.STAGING_RG }}" -l "${{ env.LOCATION }}"
+            az appservice plan create -g "${{ env.STAGING_RG }}" -n "${{ env.STAGING_PLAN }}" --sku B1 --is-linux || true
+
+      - name: Create/Update staging app (frontend)
+        uses: azure/CLI@v2
+        with:
+          inlineScript: |
+            APP="${{ env.STAGING_APP_FRONTEND }}"
+            IMG="${{ env.REGISTRY }}/frontend:testing"
+            if ! az webapp show -g "${{ env.STAGING_RG }}" -n "$APP" >/dev/null 2>&1; then
+              az webapp create -g "${{ env.STAGING_RG }}" -p "${{ env.STAGING_PLAN }}" -n "$APP" --deployment-container-image-name "$IMG"
+            fi
+            az webapp config container set -g "${{ env.STAGING_RG }}" -n "$APP" \
+              --docker-custom-image-name "$IMG" \
+              --docker-registry-server-url "https://${{ env.REGISTRY }}" \
+              --docker-registry-server-user "${{ env.ACR_USER }}" \
+              --docker-registry-server-password "${{ env.ACR_PASS }}"
+            az webapp restart -g "${{ env.STAGING_RG }}" -n "$APP"
+
+      - name: Create/Update staging app (customer)
+        uses: azure/CLI@v2
+        with:
+          inlineScript: |
+            APP="${{ env.STAGING_APP_CUSTOMER }}"
+            IMG="${{ env.REGISTRY }}/customer_service:testing"
+            if ! az webapp show -g "${{ env.STAGING_RG }}" -n "$APP" >/dev/null 2>&1; then
+              az webapp create -g "${{ env.STAGING_RG }}" -p "${{ env.STAGING_PLAN }}" -n "$APP" --deployment-container-image-name "$IMG"
+            fi
+            az webapp config container set -g "${{ env.STAGING_RG }}" -n "$APP" \
+              --docker-custom-image-name "$IMG" \
+              --docker-registry-server-url "https://${{ env.REGISTRY }}" \
+              --docker-registry-server-user "${{ env.ACR_USER }}" \
+              --docker-registry-server-password "${{ env.ACR_PASS }}"
+            az webapp config appsettings set -g "${{ env.STAGING_RG }}" -n "$APP" \
+              --settings WEBSITES_PORT=8000 USE_SQLITE=true
+            az webapp restart -g "${{ env.STAGING_RG }}" -n "$APP"
+
+      - name: Create/Update staging app (product)
+        uses: azure/CLI@v2
+        with:
+          inlineScript: |
+            APP="${{ env.STAGING_APP_PRODUCT }}"
+            IMG="${{ env.REGISTRY }}/product_service:testing"
+            if ! az webapp show -g "${{ env.STAGING_RG }}" -n "$APP" >/dev/null 2>&1; then
+              az webapp create -g "${{ env.STAGING_RG }}" -p "${{ env.STAGING_PLAN }}" -n "$APP" --deployment-container-image-name "$IMG"
+            fi
+            az webapp config container set -g "${{ env.STAGING_RG }}" -n "$APP" \
+              --docker-custom-image-name "$IMG" \
+              --docker-registry-server-url "https://${{ env.REGISTRY }}" \
+              --docker-registry-server-user "${{ env.ACR_USER }}" \
+              --docker-registry-server-password "${{ env.ACR_PASS }}"
+            az webapp config appsettings set -g "${{ env.STAGING_RG }}" -n "$APP" \
+              --settings WEBSITES_PORT=8000 USE_SQLITE=true
+            az webapp restart -g "${{ env.STAGING_RG }}" -n "$APP"
+
+      - name: Create/Update staging app (order)
+        uses: azure/CLI@v2
+        with:
+          inlineScript: |
+            APP="${{ env.STAGING_APP_ORDER }}"
+            IMG="${{ env.REGISTRY }}/order_service:testing"
+            CUST_URL="https://${{ env.STAGING_APP_CUSTOMER }}.azurewebsites.net"
+            PROD_URL="https://${{ env.STAGING_APP_PRODUCT }}.azurewebsites.net"
+            if ! az webapp show -g "${{ env.STAGING_RG }}" -n "$APP" >/dev/null 2>&1; then
+              az webapp create -g "${{ env.STAGING_RG }}" -p "${{ env.STAGING_PLAN }}" -n "$APP" --deployment-container-image-name "$IMG"
+            fi
+            az webapp config container set -g "${{ env.STAGING_RG }}" -n "$APP" \
+              --docker-custom-image-name "$IMG" \
+              --docker-registry-server-url "https://${{ env.REGISTRY }}" \
+              --docker-registry-server-user "${{ env.ACR_USER }}" \
+              --docker-registry-server-password "${{ env.ACR_PASS }}"
+            az webapp config appsettings set -g "${{ env.STAGING_RG }}" -n "$APP" \
+              --settings WEBSITES_PORT=8000 USE_SQLITE=true CUSTOMER_SERVICE_URL=$CUST_URL PRODUCT_SERVICE_URL=$PROD_URL
+            az webapp restart -g "${{ env.STAGING_RG }}" -n "$APP"
+
+      - name: Smoke checks
+        run: |
+          urls=(
+            "https://${{ env.STAGING_APP_FRONTEND }}.azurewebsites.net"
+            "https://${{ env.STAGING_APP_CUSTOMER }}.azurewebsites.net/health"
+            "https://${{ env.STAGING_APP_PRODUCT }}.azurewebsites.net/health"
+            "https://${{ env.STAGING_APP_ORDER }}.azurewebsites.net/health"
+            "https://${{ env.STAGING_APP_CUSTOMER }}.azurewebsites.net/docs"
+            "https://${{ env.STAGING_APP_PRODUCT }}.azurewebsites.net/docs"
+            "https://${{ env.STAGING_APP_ORDER }}.azurewebsites.net/docs"
+          )
+          for u in "${urls[@]}"; do
+            echo "Probing $u"
+            for i in {1..25}; do
+              code=$(curl -s -o /dev/null -w "%{http_code}" "$u")
+              [[ "$code" == "200" || "$code" == "302" ]] && { echo "OK: $u"; break; }
+              sleep 5
+            done
+          done

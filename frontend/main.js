@@ -1,540 +1,433 @@
 document.addEventListener('DOMContentLoaded', () => {
-    // API endpoints for the Product, Order, and Customer services.
-    // These ports are mapped from the Docker containers to the host machine in docker-compose.yml.
-    const PRODUCT_API_BASE_URL = '';
-    const ORDER_API_BASE_URL = '';
-    const CUSTOMER_API_BASE_URL = '';
+  // === API bases (staging) ===
+  const PRODUCT_API_BASE_URL  = 'https://sit722-staging-product-nikhil.azurewebsites.net';
+  const ORDER_API_BASE_URL    = 'https://sit722-staging-order-nikhil.azurewebsites.net';
+  const CUSTOMER_API_BASE_URL = 'https://sit722-staging-cust-nikhil.azurewebsites.net';
 
-    // DOM Elements
-    const messageBox = document.getElementById('message-box');
-    const productForm = document.getElementById('product-form');
-    const productListDiv = document.getElementById('product-list');
-    const customerForm = document.getElementById('customer-form'); // NEW: Customer Form
-    const customerListDiv = document.getElementById('customer-list'); // NEW: Customer List
-    const cartItemsList = document.getElementById('cart-items');
-    const cartTotalSpan = document.getElementById('cart-total');
-    const placeOrderForm = document.getElementById('place-order-form');
-    const orderListDiv = document.getElementById('order-list');
+  // === DOM elements ===
+  const messageBox       = document.getElementById('message-box');
+  const productForm      = document.getElementById('product-form');
+  const productListDiv   = document.getElementById('product-list');
+  const customerForm     = document.getElementById('customer-form');
+  const customerListDiv  = document.getElementById('customer-list');
+  const cartItemsList    = document.getElementById('cart-items');
+  const cartTotalSpan    = document.getElementById('cart-total');
+  const placeOrderForm   = document.getElementById('place-order-form');
+  const orderListDiv     = document.getElementById('order-list');
 
-    // Shopping Cart State
-    let cart = [];
-    let productsCache = {}; // Cache products fetched to easily get details for cart items
+  // === Local state ===
+  let cart = [];
+  let productsCache = {};
 
-    // --- Utility Functions ---
+  // === Utilities ===
+  function showMessage(msg, type = 'info') {
+    messageBox.textContent = msg;
+    messageBox.className = `message-box ${type}`;
+    messageBox.style.display = 'block';
+    setTimeout(() => (messageBox.style.display = 'none'), 5000);
+  }
 
-    // Function to display messages to the user (success, error, info)
-    function showMessage(message, type = 'info') {
-        messageBox.textContent = message;
-        messageBox.className = `message-box ${type}`;
-        messageBox.style.display = 'block';
-        // Hide after 5 seconds
-        setTimeout(() => {
-            messageBox.style.display = 'none';
-        }, 5000);
+  function formatCurrency(amount) {
+    return `$${parseFloat(amount).toFixed(2)}`;
+  }
+
+  // Generic fetch helper that gracefully handles non-JSON error pages
+  async function apiFetch(url, options = {}) {
+    const res = await fetch(url, { ...options, mode: 'cors' });
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+
+    // Try to parse JSON when available
+    if (ct.includes('application/json')) {
+      const data = await res.json();
+      if (!res.ok) {
+        const detail = (data && (data.detail || data.message)) || `HTTP ${res.status}`;
+        throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+      }
+      return data;
     }
 
-    // Function to format currency
-    function formatCurrency(amount) {
-        return `$${parseFloat(amount).toFixed(2)}`;
+    // Otherwise read text and throw a succinct error
+    const text = await res.text();
+    if (!res.ok) {
+      const snippet = text.replace(/\s+/g, ' ').slice(0, 120);
+      throw new Error(`HTTP ${res.status} ${res.statusText} – ${snippet}`);
     }
+    // Some endpoints may return empty 204 with no JSON
+    return text;
+  }
 
-    // --- Product Service Interactions ---
+  // === Product Service ===
+  async function fetchProducts() {
+    productListDiv.innerHTML = '<p>Loading products...</p>';
+    try {
+      const products = await apiFetch(`${PRODUCT_API_BASE_URL}/products/`);
+      productListDiv.innerHTML = '';
+      productsCache = {};
 
-    // Fetch and display products
-    async function fetchProducts() {
-        productListDiv.innerHTML = '<p>Loading products...</p>';
-        try {
-            const response = await fetch(`${PRODUCT_API_BASE_URL}/products/`);
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
-            }
-            const products = await response.json();
-            
-            productListDiv.innerHTML = ''; // Clear previous content
-            productsCache = {}; // Clear existing cache
+      if (!products.length) {
+        productListDiv.innerHTML = '<p>No products available yet. Add some above!</p>';
+        return;
+      }
 
-            if (products.length === 0) {
-                productListDiv.innerHTML = '<p>No products available yet. Add some above!</p>';
-                return;
-            }
-
-            products.forEach(product => {
-                productsCache[product.product_id] = product; // Cache product details
-                const productCard = document.createElement('div');
-                productCard.className = 'product-card';
-                
-                productCard.innerHTML = `
-                    <img src="${product.image_url || 'https://placehold.co/300x200/cccccc/333333?text=No+Image'}" alt="${product.name}" onerror="this.onerror=null;this.src='https://placehold.co/300x200/cccccc/333333?text=Image+Error';" />
-                    <h3>${product.name} (ID: ${product.product_id})</h3>
-                    <p>${product.description || 'No description available.'}</p>
-                    <p class="price">${formatCurrency(product.price)}</p>
-                    <p class="stock">Stock: ${product.stock_quantity}</p>
-                    <p><small>Created: ${new Date(product.created_at).toLocaleString()}</small></p>
-                    <p><small>Last Updated: ${new Date(product.updated_at).toLocaleString()}</small></p>
-                    <div class="upload-image-group">
-                        <label for="image-upload-${product.product_id}">Upload Image:</label>
-                        <input type="file" id="image-upload-${product.product_id}" accept="image/*" data-product-id="${product.product_id}">
-                        <button class="upload-btn" data-id="${product.product_id}">Upload Photo</button>
-                    </div>
-                    <div class="card-actions">
-                        <button class="add-to-cart-btn" data-id="${product.product_id}" data-name="${product.name}" data-price="${product.price}">Add to Cart</button>
-                        <button class="delete-btn" data-id="${product.product_id}">Delete</button>
-                    </div>
-                `;
-                productListDiv.appendChild(productCard);
-            });
-        } catch (error) {
-            console.error('Error fetching products:', error);
-            showMessage(`Failed to load products: ${error.message}`, 'error');
-            productListDiv.innerHTML = '<p>Could not load products. Please check the Product Service.</p>';
-        }
+      products.forEach((product) => {
+        productsCache[product.product_id] = product;
+        const card = document.createElement('div');
+        card.className = 'product-card';
+        card.innerHTML = `
+          <img src="${product.image_url || 'https://placehold.co/300x200/cccccc/333333?text=No+Image'}"
+               alt="${product.name}"
+               onerror="this.onerror=null;this.src='https://placehold.co/300x200/cccccc/333333?text=Image+Error';" />
+          <h3>${product.name} (ID: ${product.product_id})</h3>
+          <p>${product.description || 'No description available.'}</p>
+          <p class="price">${formatCurrency(product.price)}</p>
+          <p class="stock">Stock: ${product.stock_quantity}</p>
+          <p><small>Created: ${new Date(product.created_at).toLocaleString()}</small></p>
+          <p><small>Last Updated: ${new Date(product.updated_at).toLocaleString()}</small></p>
+          <div class="upload-image-group">
+            <label for="image-upload-${product.product_id}">Upload Image:</label>
+            <input type="file" id="image-upload-${product.product_id}" accept="image/*" data-product-id="${product.product_id}">
+            <button class="upload-btn" data-id="${product.product_id}">Upload Photo</button>
+          </div>
+          <div class="card-actions">
+            <button class="add-to-cart-btn" data-id="${product.product_id}" data-name="${product.name}" data-price="${product.price}">Add to Cart</button>
+            <button class="delete-btn" data-id="${product.product_id}">Delete</button>
+          </div>
+        `;
+        productListDiv.appendChild(card);
+      });
+    } catch (err) {
+      console.error('Error fetching products:', err);
+      showMessage(`Failed to load products: ${err.message}`, 'error');
+      productListDiv.innerHTML = '<p>Could not load products. Please check the Product Service.</p>';
     }
+  }
 
-    // Handle form submission for adding a new product
-    productForm.addEventListener('submit', async (event) => {
-        event.preventDefault();
+  productForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('product-name').value;
+    const price = parseFloat(document.getElementById('product-price').value);
+    const stock_quantity = parseInt(document.getElementById('product-stock').value, 10);
+    const description = document.getElementById('product-description').value;
 
-        const name = document.getElementById('product-name').value;
-        const price = parseFloat(document.getElementById('product-price').value);
-        const stock_quantity = parseInt(document.getElementById('product-stock').value, 10);
-        const description = document.getElementById('product-description').value;
+    try {
+      const added = await apiFetch(`${PRODUCT_API_BASE_URL}/products/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, price, stock_quantity, description }),
+      });
+      showMessage(`Product "${added.name}" added successfully! ID: ${added.product_id}`, 'success');
+      productForm.reset();
+      fetchProducts();
+    } catch (err) {
+      console.error('Error adding product:', err);
+      showMessage(`Error adding product: ${err.message}`, 'error');
+    }
+  });
 
-        const newProduct = { name, price, stock_quantity, description };
-
-        try {
-            const response = await fetch(`${PRODUCT_API_BASE_URL}/products/`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(newProduct),
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.detail ? JSON.stringify(errorData.detail) : `HTTP error! status: ${response.status}`);
-            }
-
-            const addedProduct = await response.json();
-            showMessage(`Product "${addedProduct.name}" added successfully! ID: ${addedProduct.product_id}`, 'success');
-            productForm.reset(); // Clear the form
-            fetchProducts(); // Refresh the list of products
-        } catch (error) {
-            console.error('Error adding product:', error);
-            showMessage(`Error adding product: ${error.message}`, 'error');
-        }
-    });
-
-    // Handle product card actions (delete, add to cart, upload image)
-    productListDiv.addEventListener('click', async (event) => {
-        // Delete Product
-        if (event.target.classList.contains('delete-btn')) {
-            const productId = event.target.dataset.id;
-            if (!confirm(`Are you sure you want to delete product ID: ${productId}?`)) {
-                return;
-            }
-            try {
-                const response = await fetch(`${PRODUCT_API_BASE_URL}/products/${productId}`, {
-                    method: 'DELETE',
-                });
-
-                if (response.status === 204) {
-                    showMessage(`Product ID: ${productId} deleted successfully.`, 'success');
-                    fetchProducts(); // Refresh the list
-                } else {
-                    const errorData = await response.json();
-                    throw new Error(errorData.detail ? JSON.stringify(errorData.detail) : `HTTP error! status: ${response.status}`);
-                }
-            } catch (error) {
-                console.error('Error deleting product:', error);
-                showMessage(`Error deleting product: ${error.message}`, 'error');
-            }
-        }
-
-        // Add to Cart
-        if (event.target.classList.contains('add-to-cart-btn')) {
-            const productId = event.target.dataset.id;
-            const productName = event.target.dataset.name;
-            const productPrice = parseFloat(event.target.dataset.price);
-            
-            addToCart(productId, productName, productPrice);
-        }
-
-        // Upload Product Image
-        if (event.target.classList.contains('upload-btn')) {
-            const productId = event.target.dataset.id;
-            const fileInput = document.getElementById(`image-upload-${productId}`);
-            const file = fileInput.files[0];
-
-            if (!file) {
-                showMessage("Please select an image file to upload.", 'info');
-                return;
-            }
-
-            const formData = new FormData();
-            formData.append("file", file);
-
-            try {
-                showMessage(`Uploading image for product ${productId}...`, 'info');
-                const response = await fetch(`${PRODUCT_API_BASE_URL}/products/${productId}/upload-image`, {
-                    method: 'POST',
-                    body: formData,
-                });
-
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.detail ? JSON.stringify(errorData.detail) : `HTTP error! status: ${response.status}`);
-                }
-
-                const updatedProduct = await response.json();
-                showMessage(`Image uploaded successfully for product ${updatedProduct.name}!`, 'success');
-                fileInput.value = ''; // Clear file input
-                fetchProducts(); // Refresh products to show new image URL
-            } catch (error) {
-                console.error('Error uploading image:', error);
-                showMessage(`Error uploading image: ${error.message}`, 'error');
-            }
-        }
-    });
-
-
-    // --- Shopping Cart Functions ---
-
-    function addToCart(productId, productName, productPrice) {
-        const existingItemIndex = cart.findIndex(item => item.product_id === productId);
-
-        if (existingItemIndex !== -1) {
-            cart[existingItemIndex].quantity += 1;
+  productListDiv.addEventListener('click', async (e) => {
+    // Delete product
+    if (e.target.classList.contains('delete-btn')) {
+      const productId = e.target.dataset.id;
+      if (!confirm(`Delete product ID: ${productId}?`)) return;
+      try {
+        const res = await fetch(`${PRODUCT_API_BASE_URL}/products/${productId}`, { method: 'DELETE' });
+        if (res.status === 204) {
+          showMessage(`Product ID: ${productId} deleted.`, 'success');
+          fetchProducts();
         } else {
-            cart.push({
-                product_id: productId,
-                name: productName,
-                price: productPrice,
-                quantity: 1
-            });
+          await apiFetch(`${PRODUCT_API_BASE_URL}/products/${productId}`, { method: 'DELETE' }); // will throw
         }
-        updateCartDisplay();
-        showMessage(`Added "${productName}" to cart!`, 'info');
+      } catch (err) {
+        console.error('Error deleting product:', err);
+        showMessage(`Error deleting product: ${err.message}`, 'error');
+      }
     }
 
-    function updateCartDisplay() {
-        cartItemsList.innerHTML = '';
-        let totalCartAmount = 0;
+    // Add to cart
+    if (e.target.classList.contains('add-to-cart-btn')) {
+      const productId = e.target.dataset.id;
+      const productName = e.target.dataset.name;
+      const productPrice = parseFloat(e.target.dataset.price);
+      addToCart(productId, productName, productPrice);
+    }
 
-        if (cart.length === 0) {
-            cartItemsList.innerHTML = '<li>Your cart is empty.</li>';
+    // Upload image
+    if (e.target.classList.contains('upload-btn')) {
+      const productId = e.target.dataset.id;
+      const fileInput = document.getElementById(`image-upload-${productId}`);
+      const file = fileInput.files[0];
+      if (!file) return showMessage('Please select an image file to upload.', 'info');
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        showMessage(`Uploading image for product ${productId}...`, 'info');
+        const res = await fetch(`${PRODUCT_API_BASE_URL}/products/${productId}/upload-image`, {
+          method: 'POST',
+          body: formData,
+        });
+        if (!res.ok) {
+          // route through helper to surface any JSON error
+          await apiFetch(`${PRODUCT_API_BASE_URL}/products/${productId}/upload-image`, {
+            method: 'POST',
+            body: formData,
+          });
         } else {
-            cart.forEach(item => {
-                const li = document.createElement('li');
-                const itemTotal = item.quantity * item.price;
-                totalCartAmount += itemTotal;
-                li.innerHTML = `
-                    <span>${item.name} (x${item.quantity})</span>
-                    <span>${formatCurrency(item.price)} each - ${formatCurrency(itemTotal)}</span>
-                `;
-                cartItemsList.appendChild(li);
-            });
+          const updated = await res.json();
+          showMessage(`Image uploaded for product ${updated.name}!`, 'success');
+          fileInput.value = '';
+          fetchProducts();
         }
-        cartTotalSpan.textContent = `Total: ${formatCurrency(totalCartAmount)}`;
+      } catch (err) {
+        console.error('Error uploading image:', err);
+        showMessage(`Error uploading image: ${err.message}`, 'error');
+      }
+    }
+  });
+
+  // === Cart ===
+  function addToCart(productId, productName, productPrice) {
+    const idx = cart.findIndex((i) => i.product_id === productId);
+    if (idx !== -1) cart[idx].quantity += 1;
+    else cart.push({ product_id: productId, name: productName, price: productPrice, quantity: 1 });
+    updateCartDisplay();
+    showMessage(`Added "${productName}" to cart!`, 'info');
+  }
+
+  function updateCartDisplay() {
+    cartItemsList.innerHTML = '';
+    let total = 0;
+    if (!cart.length) {
+      cartItemsList.innerHTML = '<li>Your cart is empty.</li>';
+    } else {
+      cart.forEach((item) => {
+        const li = document.createElement('li');
+        const itemTotal = item.quantity * item.price;
+        total += itemTotal;
+        li.innerHTML = `
+          <span>${item.name} (x${item.quantity})</span>
+          <span>${formatCurrency(item.price)} each - ${formatCurrency(itemTotal)}</span>
+        `;
+        cartItemsList.appendChild(li);
+      });
+    }
+    cartTotalSpan.textContent = `Total: ${formatCurrency(total)}`;
+  }
+
+  // === Customer Service ===
+  async function fetchCustomers() {
+    customerListDiv.innerHTML = '<p>Loading customers...</p>';
+    try {
+      const customers = await apiFetch(`${CUSTOMER_API_BASE_URL}/customers/`);
+      customerListDiv.innerHTML = '';
+
+      if (!customers.length) {
+        customerListDiv.innerHTML = '<p>No customers available yet. Add some above!</p>';
+        return;
+      }
+
+      customers.forEach((c) => {
+        const card = document.createElement('div');
+        card.className = 'customer-card';
+        card.innerHTML = `
+          <h3>${c.first_name} ${c.last_name} (ID: ${c.customer_id})</h3>
+          <p>Email: ${c.email}</p>
+          <p>Phone: ${c.phone_number || 'N/A'}</p>
+          <p>Shipping Address: ${c.shipping_address || 'N/A'}</p>
+          <p><small>Created: ${new Date(c.created_at).toLocaleString()}</small></p>
+          <div class="card-actions">
+            <button class="delete-customer-btn" data-id="${c.customer_id}">Delete</button>
+          </div>
+        `;
+        customerListDiv.appendChild(card);
+      });
+    } catch (err) {
+      console.error('Error fetching customers:', err);
+      showMessage(`Failed to load customers: ${err.message}`, 'error');
+      customerListDiv.innerHTML = '<p>Could not load customers. Please check the Customer Service.</p>';
+    }
+  }
+
+  customerForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email            = document.getElementById('customer-email').value;
+    const password         = document.getElementById('customer-password').value;
+    const first_name       = document.getElementById('customer-first-name').value;
+    const last_name        = document.getElementById('customer-last-name').value;
+    const phone_number     = document.getElementById('customer-phone').value;
+    const shipping_address = document.getElementById('customer-shipping-address').value;
+
+    try {
+      const added = await apiFetch(`${CUSTOMER_API_BASE_URL}/customers/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, first_name, last_name, phone_number, shipping_address }),
+      });
+      showMessage(`Customer "${added.email}" added! ID: ${added.customer_id}`, 'success');
+      customerForm.reset();
+      fetchCustomers();
+    } catch (err) {
+      console.error('Error adding customer:', err);
+      showMessage(`Error adding customer: ${err.message}`, 'error');
+    }
+  });
+
+  customerListDiv.addEventListener('click', async (e) => {
+    if (!e.target.classList.contains('delete-customer-btn')) return;
+    const id = e.target.dataset.id;
+    if (!confirm(`Delete customer ID: ${id}?`)) return;
+    try {
+      const res = await fetch(`${CUSTOMER_API_BASE_URL}/customers/${id}`, { method: 'DELETE' });
+      if (res.status === 204) {
+        showMessage(`Customer ID: ${id} deleted.`, 'success');
+        fetchCustomers();
+      } else {
+        await apiFetch(`${CUSTOMER_API_BASE_URL}/customers/${id}`, { method: 'DELETE' }); // will throw
+      }
+    } catch (err) {
+      console.error('Error deleting customer:', err);
+      showMessage(`Error deleting customer: ${err.message}`, 'error');
+    }
+  });
+
+  // === Order Service ===
+  placeOrderForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!cart.length) return showMessage('Your cart is empty. Add products first.', 'info');
+
+    const user_id         = parseInt(document.getElementById('order-user-id').value, 10);
+    const shipping_address = document.getElementById('shipping-address').value;
+    const items = cart.map((i) => ({
+      product_id: parseInt(i.product_id, 10),
+      quantity: i.quantity,
+      price_at_purchase: i.price,
+    }));
+
+    try {
+      showMessage('Placing order... (status will update asynchronously)', 'info');
+      const placed = await apiFetch(`${ORDER_API_BASE_URL}/orders/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id, shipping_address, items }),
+      });
+      showMessage(`Order ${placed.order_id} created with status: ${placed.status}.`, 'success');
+      cart = [];
+      updateCartDisplay();
+      placeOrderForm.reset();
+      fetchOrders();
+    } catch (err) {
+      console.error('Error placing order:', err);
+      showMessage(`Error placing order: ${err.message}`, 'error');
+    }
+  });
+
+  async function fetchOrders() {
+    orderListDiv.innerHTML = '<p>Loading orders...</p>';
+    try {
+      const orders = await apiFetch(`${ORDER_API_BASE_URL}/orders/`);
+      orderListDiv.innerHTML = '';
+
+      if (!orders.length) {
+        orderListDiv.innerHTML = '<p>No orders available yet.</p>';
+        return;
+      }
+
+      orders.forEach((order) => {
+        const card = document.createElement('div');
+        card.className = 'order-card';
+        card.innerHTML = `
+          <h3>Order ID: ${order.order_id}</h3>
+          <p>User ID: ${order.user_id}</p>
+          <p>Order Date: ${new Date(order.order_date).toLocaleString()}</p>
+          <p>Status: <span id="order-status-${order.order_id}">${order.status}</span></p>
+          <p>Total Amount: ${formatCurrency(order.total_amount)}</p>
+          <p>Shipping Address: ${order.shipping_address || 'N/A'}</p>
+          <p><small>Created: ${new Date(order.created_at).toLocaleString()}</small></p>
+          <p><small>Last Updated: ${new Date(order.updated_at).toLocaleString()}</small></p>
+
+          <h4>Items:</h4>
+          <ul class="order-items">
+            ${order.items.map((it) => `
+              <li>
+                <span>Product ID: ${it.product_id}</span>
+                - Qty: ${it.quantity} @ ${formatCurrency(it.price_at_purchase)}
+                (Total: ${formatCurrency(it.item_total)})
+              </li>
+            `).join('')}
+          </ul>
+
+          <div class="status-selector">
+            <select id="status-select-${order.order_id}" data-order-id="${order.order_id}">
+              <option value="pending"   ${order.status === 'pending' ? 'selected' : ''}>Pending</option>
+              <option value="processing"${order.status === 'processing' ? 'selected' : ''}>Processing</option>
+              <option value="shipped"   ${order.status === 'shipped' ? 'selected' : ''}>Shipped</option>
+              <option value="confirmed" ${order.status === 'confirmed' ? 'selected' : ''}>Confirmed</option>
+              <option value="failed"    ${order.status === 'failed' ? 'selected' : ''}>Failed</option>
+              <option value="cancelled" ${order.status === 'cancelled' ? 'selected' : ''}>Cancelled</option>
+              <option value="completed" ${order.status === 'completed' ? 'selected' : ''}>Completed</option>
+            </select>
+            <button class="status-update-btn" data-id="${order.order_id}">Update Status</button>
+          </div>
+          <div class="card-actions">
+            <button class="delete-btn" data-id="${order.order_id}">Delete Order</button>
+          </div>
+        `;
+        orderListDiv.appendChild(card);
+      });
+    } catch (err) {
+      console.error('Error fetching orders:', err);
+      showMessage(`Failed to load orders: ${err.message}`, 'error');
+      orderListDiv.innerHTML = '<p>Could not load orders. Please check the Order Service.</p>';
+    }
+  }
+
+  orderListDiv.addEventListener('click', async (e) => {
+    // Update status
+    if (e.target.classList.contains('status-update-btn')) {
+      const orderId = e.target.dataset.id;
+      const select = document.getElementById(`status-select-${orderId}`);
+      const newStatus = select.value;
+
+      try {
+        showMessage(`Updating status for order ${orderId} to "${newStatus}"...`, 'info');
+        const updated = await apiFetch(`${ORDER_API_BASE_URL}/orders/${orderId}/status`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: newStatus }),
+        });
+        document.getElementById(`order-status-${orderId}`).textContent = updated.status;
+        showMessage(`Order ${orderId} status updated to "${updated.status}"!`, 'success');
+        fetchOrders();
+      } catch (err) {
+        console.error('Error updating order status:', err);
+        showMessage(`Error updating order status: ${err.message}`, 'error');
+      }
     }
 
-
-    // --- Customer Service Interactions ---
-
-    // Fetch and display customers
-    async function fetchCustomers() {
-        customerListDiv.innerHTML = '<p>Loading customers...</p>';
-        try {
-            const response = await fetch(`${CUSTOMER_API_BASE_URL}/customers/`);
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
-            }
-            const customers = await response.json();
-            
-            customerListDiv.innerHTML = ''; // Clear previous content
-
-            if (customers.length === 0) {
-                customerListDiv.innerHTML = '<p>No customers available yet. Add some above!</p>';
-                return;
-            }
-
-            customers.forEach(customer => {
-                const customerCard = document.createElement('div');
-                customerCard.className = 'customer-card';
-                customerCard.innerHTML = `
-                    <h3>${customer.first_name} ${customer.last_name} (ID: ${customer.customer_id})</h3>
-                    <p>Email: ${customer.email}</p>
-                    <p>Phone: ${customer.phone_number || 'N/A'}</p>
-                    <p>Shipping Address: ${customer.shipping_address || 'N/A'}</p>
-                    <p><small>Created: ${new Date(customer.created_at).toLocaleString()}</small></p>
-                    <div class="card-actions">
-                        <button class="delete-customer-btn" data-id="${customer.customer_id}">Delete</button>
-                    </div>
-                `;
-                customerListDiv.appendChild(customerCard);
-            });
-        } catch (error) {
-            console.error('Error fetching customers:', error);
-            showMessage(`Failed to load customers: ${error.message}`, 'error');
-            customerListDiv.innerHTML = '<p>Could not load customers. Please check the Customer Service.</p>';
+    // Delete order
+    if (e.target.classList.contains('delete-btn')) {
+      const orderId = e.target.dataset.id;
+      if (!confirm(`Delete order ID: ${orderId}? This will also delete all associated items.`)) return;
+      try {
+        const res = await fetch(`${ORDER_API_BASE_URL}/orders/${orderId}`, { method: 'DELETE' });
+        if (res.status === 204) {
+          showMessage(`Order ID: ${orderId} deleted.`, 'success');
+          fetchOrders();
+        } else {
+          await apiFetch(`${ORDER_API_BASE_URL}/orders/${orderId}`, { method: 'DELETE' }); // will throw
         }
+      } catch (err) {
+        console.error('Error deleting order:', err);
+        showMessage(`Error deleting order: ${err.message}`, 'error');
+      }
     }
+  });
 
-    // Handle form submission for adding a new customer
-    customerForm.addEventListener('submit', async (event) => {
-        event.preventDefault();
-
-        const email = document.getElementById('customer-email').value;
-        const password = document.getElementById('customer-password').value;
-        const first_name = document.getElementById('customer-first-name').value;
-        const last_name = document.getElementById('customer-last-name').value;
-        const phone_number = document.getElementById('customer-phone').value;
-        const shipping_address = document.getElementById('customer-shipping-address').value;
-
-        const newCustomer = { email, password, first_name, last_name, phone_number, shipping_address };
-
-        try {
-            const response = await fetch(`${CUSTOMER_API_BASE_URL}/customers/`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(newCustomer),
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.detail ? JSON.stringify(errorData.detail) : `HTTP error! status: ${response.status}`);
-            }
-
-            const addedCustomer = await response.json();
-            showMessage(`Customer "${addedCustomer.email}" added successfully! ID: ${addedCustomer.customer_id}`, 'success');
-            customerForm.reset(); // Clear the form
-            fetchCustomers(); // Refresh the list of customers
-        } catch (error) {
-            console.error('Error adding customer:', error);
-            showMessage(`Error adding customer: ${error.message}`, 'error');
-        }
-    });
-
-    // Handle customer delete buttons (using event delegation)
-    customerListDiv.addEventListener('click', async (event) => {
-        if (event.target.classList.contains('delete-customer-btn')) {
-            const customerId = event.target.dataset.id;
-            if (!confirm(`Are you sure you want to delete customer ID: ${customerId}?`)) {
-                return;
-            }
-            try {
-                const response = await fetch(`${CUSTOMER_API_BASE_URL}/customers/${customerId}`, {
-                    method: 'DELETE',
-                });
-
-                if (response.status === 204) {
-                    showMessage(`Customer ID: ${customerId} deleted successfully.`, 'success');
-                    fetchCustomers(); // Refresh the list
-                } else {
-                    const errorData = await response.json();
-                    throw new Error(errorData.detail ? JSON.stringify(errorData.detail) : `HTTP error! status: ${response.status}`);
-                }
-            } catch (error) {
-                console.error('Error deleting customer:', error);
-                showMessage(`Error deleting customer: ${error.message}`, 'error');
-            }
-        }
-    });
-
-
-    // --- Order Service Interactions ---
-
-    // Handle form submission for placing a new order
-    placeOrderForm.addEventListener('submit', async (event) => {
-        event.preventDefault();
-
-        if (cart.length === 0) {
-            showMessage("Your cart is empty. Add products before placing an order.", 'info');
-            return;
-        }
-
-        const userId = parseInt(document.getElementById('order-user-id').value, 10);
-        const shippingAddress = document.getElementById('shipping-address').value;
-
-        // Map cart items to OrderItemCreate schema
-        const orderItems = cart.map(item => ({
-            product_id: parseInt(item.product_id, 10),
-            quantity: item.quantity,
-            price_at_purchase: item.price
-        }));
-
-        const newOrder = {
-            user_id: userId,
-            shipping_address: shippingAddress,
-            items: orderItems
-        };
-
-        try {
-            // Order service will now create order with 'pending' status
-            // and publish an event for stock deduction.
-            showMessage("Placing order... (status will update asynchronously)", 'info');
-            const response = await fetch(`${ORDER_API_BASE_URL}/orders/`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(newOrder),
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.detail ? JSON.stringify(errorData.detail) : `HTTP error! status: ${response.status}`);
-            }
-
-            const placedOrder = await response.json();
-            showMessage(`Order ${placedOrder.order_id} created with initial status: ${placedOrder.status}. Stock deduction pending.`, 'success');
-            
-            cart = []; // Clear cart after successful order placement
-            updateCartDisplay();
-            placeOrderForm.reset(); // Clear form
-            fetchOrders(); // Refresh order list to show the new 'pending' order
-            // No longer fetching products here directly, as stock update is asynchronous
-        } catch (error) {
-            console.error('Error placing order:', error);
-            showMessage(`Error placing order: ${error.message}`, 'error');
-        }
-    });
-
-    // Fetch and display orders
-    async function fetchOrders() {
-        orderListDiv.innerHTML = '<p>Loading orders...</p>';
-        try {
-            const response = await fetch(`${ORDER_API_BASE_URL}/orders/`);
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
-            }
-            const orders = await response.json();
-            
-            orderListDiv.innerHTML = ''; // Clear previous content
-
-            if (orders.length === 0) {
-                orderListDiv.innerHTML = '<p>No orders available yet.</p>';
-                return;
-            }
-
-            orders.forEach(order => {
-                const orderCard = document.createElement('div');
-                orderCard.className = 'order-card';
-                orderCard.innerHTML = `
-                    <h3>Order ID: ${order.order_id}</h3>
-                    <p>User ID: ${order.user_id}</p>
-                    <p>Order Date: ${new Date(order.order_date).toLocaleString()}</p>
-                    <p>Status: <span id="order-status-${order.order_id}">${order.status}</span></p>
-                    <p>Total Amount: ${formatCurrency(order.total_amount)}</p>
-                    <p>Shipping Address: ${order.shipping_address || 'N/A'}</p>
-                    <p><small>Created: ${new Date(order.created_at).toLocaleString()}</small></p>
-                    <p><small>Last Updated: ${new Date(order.updated_at).toLocaleString()}</small></p>
-                    
-                    <h4>Items:</h4>
-                    <ul class="order-items">
-                        ${order.items.map(item => `
-                            <li>
-                                <span>Product ID: ${item.product_id}</span> - Qty: ${item.quantity} @ ${formatCurrency(item.price_at_purchase)} (Total: ${formatCurrency(item.item_total)})
-                            </li>
-                        `).join('')}
-                    </ul>
-
-                    <div class="status-selector">
-                        <select id="status-select-${order.order_id}" data-order-id="${order.order_id}">
-                            <option value="pending" ${order.status === 'pending' ? 'selected' : ''}>Pending</option>
-                            <option value="processing" ${order.status === 'processing' ? 'selected' : ''}>Processing</option>
-                            <option value="shipped" ${order.status === 'shipped' ? 'selected' : ''}>Shipped</option>
-                            <option value="confirmed" ${order.status === 'confirmed' ? 'selected' : ''}>Confirmed</option>
-                            <option value="failed" ${order.status === 'failed' ? 'selected' : ''}>Failed</option> <!-- NEW: Failed Status -->
-                            <option value="cancelled" ${order.status === 'cancelled' ? 'selected' : ''}>Cancelled</option>
-                            <option value="completed" ${order.status === 'completed' ? 'selected' : ''}>Completed</option>
-                        </select>
-                        <button class="status-update-btn" data-id="${order.order_id}">Update Status</button>
-                    </div>
-                    <div class="card-actions">
-                        <button class="delete-btn" data-id="${order.order_id}">Delete Order</button>
-                    </div>
-                `;
-                orderListDiv.appendChild(orderCard);
-            });
-        } catch (error) {
-            console.error('Error fetching orders:', error);
-            showMessage(`Failed to load orders: ${error.message}`, 'error');
-            orderListDiv.innerHTML = '<p>Could not load orders. Please check the Order Service.</p>';
-        }
-    }
-
-    // Handle order status update and delete buttons (using event delegation)
-    orderListDiv.addEventListener('click', async (event) => {
-        // Update Order Status
-        if (event.target.classList.contains('status-update-btn')) {
-            const orderId = event.target.dataset.id;
-            const statusSelect = document.getElementById(`status-select-${orderId}`);
-            const newStatus = statusSelect.value;
-
-            try {
-                showMessage(`Updating status for order ${orderId} to "${newStatus}"...`, 'info');
-                const response = await fetch(`${ORDER_API_BASE_URL}/orders/${orderId}/status`, { // PATCH request now uses body
-                    method: 'PATCH',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ status: newStatus }), // Send status in body
-                });
-
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.detail ? JSON.stringify(errorData.detail) : `HTTP error! status: ${response.status}`);
-                }
-
-                const updatedOrder = await response.json();
-                document.getElementById(`order-status-${orderId}`).textContent = updatedOrder.status;
-                showMessage(`Order ${orderId} status updated to "${updatedOrder.status}"!`, 'success');
-                fetchOrders(); // Refresh the list to reflect any changes if needed
-            } catch (error) {
-                console.error('Error updating order status:', error);
-                showMessage(`Error updating order status: ${error.message}`, 'error');
-            }
-        }
-
-        // Delete Order
-        if (event.target.classList.contains('delete-btn')) {
-            const orderId = event.target.dataset.id;
-            if (!confirm(`Are you sure you want to delete order ID: ${orderId}? This will also delete all associated items.`)) {
-                return;
-            }
-            try {
-                const response = await fetch(`${ORDER_API_BASE_URL}/orders/${orderId}`, {
-                    method: 'DELETE',
-                });
-
-                if (response.status === 204) {
-                    showMessage(`Order ID: ${orderId} deleted successfully.`, 'success');
-                    fetchOrders(); // Refresh the list
-                } else {
-                    const errorData = await response.json();
-                    throw new Error(errorData.detail ? JSON.stringify(errorData.detail) : `HTTP error! status: ${response.status}`);
-                }
-            } catch (error) {
-                console.error('Error deleting order:', error);
-                showMessage(`Error deleting order: ${error.message}`, 'error');
-            }
-        }
-    });
-
-    // Initial data fetch on page load
-    fetchProducts();
-    fetchCustomers(); // NEW: Fetch customers on load
-    fetchOrders();
-
-    // Set up a periodic refresh for orders (e.g., every 10 seconds)
-    // This helps show asynchronous status updates from RabbitMQ in real-time
-    setInterval(fetchOrders, 10000); // Refresh orders every 10 seconds
-    setInterval(fetchProducts, 15000); // Refresh products every 15 seconds to see stock changes
-
+  // === Initial load + periodic refresh ===
+  fetchProducts();
+  fetchCustomers();
+  fetchOrders();
+  setInterval(fetchOrders, 10000);
+  setInterval(fetchProducts, 15000);
 });

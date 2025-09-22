@@ -26,11 +26,6 @@ logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.error").setLevel(logging.INFO)
 
 
-PRODUCT_SERVICE_URL = os.getenv("PRODUCT_SERVICE_URL", "http://localhost:8000")
-logger.info(
-    f"Order Service: Configured to communicate with Product Service at: {PRODUCT_SERVICE_URL}"
-)
-
 # --- FastAPI Application Setup ---
 app = FastAPI(
     title="Customer Service API",
@@ -41,7 +36,7 @@ app = FastAPI(
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict for production
+    allow_origins=["*"],  # tighten in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
